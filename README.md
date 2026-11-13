@@ -95,6 +95,38 @@ curl --socks5-hostname <client-lan-ip>:1080 https://example.com
 
 > 代理模式必须使用 `TalariaTCP`；`Validate` 会拒绝 `TalariaUDP + proxy.enabled`。
 
+## 抗封锁与性能定位
+
+cursus / Talaria 是**速度导向**的 VPN 数据通道，不是抗封锁协议。
+
+**抗封锁弱点：**
+
+- TCP/443 上是「变形 TLS」：有真实证书与 SNI，但前导码被 wire secret 随机化，
+  不是标准 ClientHello。对 DPI 而言这是「声称 TLS 却不像 TLS」的高价值异常特征。
+- 无流量整形：记录头固定（`type‖epoch‖seq`）、包长固定、无随机 padding、
+  无包长抖动、无低熵模式。长时间大流量的长度分布与熵特征容易被统计聚类。
+- 固定端口 + 固定 SNI：SNI、证书域名、443 端口都是可直接封禁的稳定指纹。
+- 主动探测防护较强（无 wire secret 的包静默丢弃、裸 TLS ClientHello 无响应），
+  但这只解决「被扫到」，不解决「被分类」。
+- 无多入口、无伪装站复用、无 SNI 轮换、无流量模式切换。
+
+X-VPN 自己也把 Talaria 定位为速度方案，受限网络走的是 Everest 系列与混淆，
+官方技术文档明确写了「Talaria 专注速度与效率，Everest 更适合限制性网络」。
+若主要目标是抗封锁，应使用 mieru/mita 这类带随机 padding、低熵模式、
+无 TLS 指纹的专用协议，而不是 cursus。
+
+**速度（X-VPN 官方口径，内部测试，非本项目实测）：**
+
+- 10 Gbps 内网测试：下载/上传综合较其旧协议（含 WireGuard）提升 **200%+**；
+  Windows 新加坡线路 P50 下载 1,536 → 5,706 Mbps。
+- 1 Gbps / 100 Mbps 测试：Windows/macOS 下载速度损失 **< 5%**（保留 >95% 基线）。
+- 手段：每连接独立通道多核并行、批量包处理、流级转发减少逐包开销。
+- 测试规模 8,451 次 / 6,590 有效样本，2026-08~09，新加坡发起至新加坡/英国/美国。
+
+这些是 X-VPN 自家商业网络 + 客户端优化的结果，开源库本身不含服务端集群、
+AI 路由、平台加速路径。cursus 作为原型，实测吞吐约 3–4 MB/s 量级，
+不具备上述数字的可复现性；MTU 上限 1314、单进程、无 offload 优化。
+
 ## 配置
 
 | 配置 | 角色 / 模式 |
