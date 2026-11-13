@@ -1,0 +1,55 @@
+# cursus-server — 单进程同时提供 UDP/443 与 TCP/443
+# 用法: sudo cursus -role server -config /etc/cursus/cursus-server.yaml
+mode: server
+
+# 必须与客户端一致；与证书 SNI 一致，每个端点唯一
+identity: vpn.example.com
+
+# 部署级预共享密钥，>=32 字节。两端必须完全一致。
+wire_secret: "CHANGE-ME-DEPLOYMENT-WIRE-SECRET-32-BYTES"
+
+# 服务端总是同时启动两种协议；此字段只用于默认提示，客户端才二选一。
+protocol: TalariaUDP
+
+server:
+  listen_host: 0.0.0.0
+  udp_port: 443          # UDP/443：与 HTTPS/QUIC 同端口
+  tcp_port: 443             # 防火墙需放行 TCP/443（TalariaTCP 用）
+  cert_file: /etc/letsencrypt/live/vpn.example.com/fullchain.pem
+  key_file: /etc/letsencrypt/live/vpn.example.com/privkey.pem
+  auth:
+    client_id: cursus-demo
+    secret_key: "cursus-demo-secret-change-me"
+    assigned_client_id: 1
+    version: 1
+  allow_private: false      # 默认拒绝 RFC1918；测公网 1.1.1.1 不需开
+  # UDP 实例与 TCP 实例各用一个 VIP 池，避免回包路由冲突
+  virtual_prefix: 10.77.0.0/24
+  virtual_base: 10.77.0.2
+  virtual_prefix_tcp: 10.78.0.0/24
+  virtual_base_tcp: 10.78.0.2
+  wan_interface: eth0
+  manage_routing: true      # 自动启用 ip_forward + nft MASQUERADE，退出时还原
+
+client:
+  server_ip: 203.0.113.1
+  server_port: 443
+  client_id: cursus-demo
+  secret_key: "cursus-demo-secret-change-me"
+  entrance_ip: 10.77.0.1
+  exit_ip: 10.77.0.2
+  routes:
+    - 1.1.1.1/32
+
+tun:
+  mode: tun                 # tun=真实 /dev/net/tun；echo=免 root 回环自检
+  server_name: cursus-s0
+  server_name_tcp: cursus-t0
+  client_name: cursus-c0
+  mtu: 1314
+  echo_target: 1.1.1.1
+  echo_payload: cursus
+  probe_seconds: 2
+
+log:
+  verbose: false            # true 会打印每包统计，压测时建议 false

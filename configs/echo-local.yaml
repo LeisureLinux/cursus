@@ -1,0 +1,49 @@
+# 本地零权限自检（server + client 两个进程，不需要 root、不碰网络配置）
+mode: server
+identity: vpn.example.com
+wire_secret: "CHANGE-ME-DEPLOYMENT-WIRE-SECRET-32-BYTES"
+protocol: TalariaUDP
+
+server:
+  listen_host: 127.0.0.1
+  udp_port: 443
+  tcp_port: 443
+  cert_file: ""
+  key_file: ""
+  auth:
+    client_id: cursus-demo
+    secret_key: "cursus-demo-secret-change-me"
+    assigned_client_id: 1
+    version: 1
+  allow_private: true
+  virtual_prefix: 10.77.0.0/24
+  virtual_base: 10.77.0.2
+  virtual_prefix_tcp: 10.78.0.0/24
+  virtual_base_tcp: 10.78.0.2
+  wan_interface: eth0
+  manage_routing: false
+
+client:
+  server_ip: 127.0.0.1
+  server_port: 443
+  client_id: cursus-demo
+  secret_key: "cursus-demo-secret-change-me"
+  entrance_ip: 10.77.0.1
+  exit_ip: 10.77.0.2
+  routes: []
+
+tun:
+  mode: echo
+  server_name: cursus-s0
+  server_name_tcp: cursus-t0
+  client_name: cursus-c0
+  mtu: 1314
+  echo_target: 1.1.1.1
+  echo_payload: cursus
+  probe_seconds: 2
+
+tls:
+  ca_file: /var/tmp/cursus-echo-ca.pem
+
+log:
+  verbose: true

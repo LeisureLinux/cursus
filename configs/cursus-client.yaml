@@ -1,0 +1,50 @@
+# cursus-client — TalariaUDP / TUN 模式（需要 root/CAP_NET_ADMIN）
+# 用法: sudo cursus -role client -config cursus-client.yaml
+mode: client
+identity: vpn.example.com
+wire_secret: "CHANGE-ME-DEPLOYMENT-WIRE-SECRET-32-BYTES"
+protocol: TalariaUDP
+
+server:
+  listen_host: 127.0.0.1
+  udp_port: 443
+  tcp_port: 443
+  cert_file: ""
+  key_file: ""
+  auth:
+    client_id: cursus-demo
+    secret_key: "cursus-demo-secret-change-me"
+    assigned_client_id: 1
+    version: 1
+  allow_private: false
+  virtual_prefix: 10.77.0.0/24
+  virtual_base: 10.77.0.2
+  wan_interface: eth0
+  manage_routing: false
+
+client:
+  server_ip: 203.0.113.1
+  server_port: 443            # TalariaUDP / UDP 443
+  client_id: cursus-demo
+  secret_key: "cursus-demo-secret-change-me"
+  entrance_ip: 10.77.0.1
+  exit_ip: 10.77.0.2
+  routes:
+    - 1.1.1.1/32
+  proxy:
+    enabled: false
+    listen_host: 0.0.0.0
+    socks5_port: 1080
+    http_port: 8080
+
+tun:
+  mode: tun
+  server_name: cursus-s0
+  client_name: cursus-c0
+  mtu: 1314
+  echo_target: 1.1.1.1
+  echo_payload: cursus
+  probe_seconds: 2
+
+log:
+  verbose: false

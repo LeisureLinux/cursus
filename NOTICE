@@ -1,0 +1,14 @@
+cursus
+SPDX-License-Identifier: AGPL-3.0-only
+
+This project is licensed under the GNU Affero General Public License v3.0 only.
+See LICENSE for the full text.
+
+Third-party code:
+  third_party/talaria/  -- Talaria VPN library
+                          Copyright (C) 2026 LIGHTNINGLINK NETWORKS PTE. LTD.
+                          SPDX-License-Identifier: AGPL-3.0-only
+                          Upstream: https://github.com/X-VPN/Talaria
+
+Other Go module dependencies retain their own licenses; see
+third_party/talaria/THIRD_PARTY_NOTICES.md and go.sum.
