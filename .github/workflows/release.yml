@@ -1,0 +1,331 @@
+name: release
+
+# Build and publish cursus artifacts when a version tag is pushed, or manually.
+# All packaging happens in CI: local machines only edit source and push a tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 0.1.1). Defaults to the tag or "dev".'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  GOWORK: off
+  CGO_ENABLED: '0'
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Static cross-compilation for Linux amd64/arm64 and Windows amd64.
+  #    One binary per OS/arch, role selected at runtime with -role.
+  # ---------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            ext: ''
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ''
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="dev"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Building cursus ${V} for ${{ matrix.target }}"
+
+      - name: Test (host only)
+        if: matrix.target == 'linux-amd64'
+        env:
+          # -race needs cgo; release binaries themselves remain CGO_ENABLED=0.
+          CGO_ENABLED: '1'
+        run: |
+          go test ./... -count=1
+          go test -race ./internal/... -count=1
+          go vet ./...
+
+      - name: Static build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
+            -o "dist/cursus-${{ matrix.target }}${{ matrix.ext }}" ./cmd/cursus
+          file "dist/cursus-${{ matrix.target }}${{ matrix.ext }}"
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/cursus-${{ matrix.target }}*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # 2. Linux .deb packages (amd64 + arm64). Built with dpkg-deb, no fpm,
+  #    no runtime dependencies thanks to CGO_ENABLED=0.
+  # ---------------------------------------------------------------------
+  deb:
+    name: deb ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            arch: amd64
+          - target: linux-arm64
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="dev"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist
+
+      - name: Assemble .deb root
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          A="${{ matrix.arch }}"
+          ROOT="pkgroot"
+          mkdir -p "$ROOT/DEBIAN" \
+                   "$ROOT/usr/bin" \
+                   "$ROOT/etc/cursus" \
+                   "$ROOT/usr/lib/systemd/system" \
+                   "$ROOT/usr/share/doc/cursus"
+
+          install -m 0755 "dist/cursus-${{ matrix.target }}" "$ROOT/usr/bin/cursus"
+          for f in configs/*.yaml; do
+            install -m 0644 "$f" "$ROOT/etc/cursus/$(basename "$f")"
+          done
+          install -m 0644 deploy/*.service "$ROOT/usr/lib/systemd/system/"
+          install -m 0644 README.md "$ROOT/usr/share/doc/cursus/README.md"
+          install -m 0644 LICENSE "$ROOT/usr/share/doc/cursus/copyright" 2>/dev/null || true
+
+          sed -e "s/__VERSION__/$V/" -e "s/__ARCH__/$A/" \
+            packaging/deb/control > "$ROOT/DEBIAN/control"
+          cat > "$ROOT/DEBIAN/conffiles" <<'EOS'
+          /etc/cursus/cursus-client.yaml
+          /etc/cursus/cursus-client-proxy.yaml
+          /etc/cursus/cursus-client-tcp.yaml
+          /etc/cursus/cursus-server.yaml
+          /etc/cursus/echo-local.yaml
+          EOS
+          cat > "$ROOT/DEBIAN/postinst" <<'EOS'
+          #!/bin/sh
+          set -e
+          if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload || true
+          fi
+          echo "cursus installed. Edit /etc/cursus/*.yaml, then:"
+          echo "  systemctl enable --now cursus-server   # one process, UDP/443 + TCP/443"
+          echo "  systemctl enable --now cursus-client  # client"
+          exit 0
+          EOS
+          cat > "$ROOT/DEBIAN/prerm" <<'EOS'
+          #!/bin/sh
+          set -e
+          for u in cursus-client cursus-server; do
+            if command -v systemctl >/dev/null 2>&1; then
+              systemctl disable --now "$u" >/dev/null 2>&1 || true
+            fi
+          done
+          exit 0
+          EOS
+          chmod 0755 "$ROOT/DEBIAN/postinst" "$ROOT/DEBIAN/prerm"
+
+          mkdir -p dist
+          dpkg-deb --build --root-owner-group "$ROOT" \
+            "dist/cursus_${V}_${A}.deb"
+          dpkg-deb --info "dist/cursus_${V}_${A}.deb" | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # 3. Windows x86_64 setup.exe (NSIS installer around the static exe).
+  # ---------------------------------------------------------------------
+  windows:
+    name: windows setup.exe
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            V="dev"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-windows-amd64
+          path: dist
+
+      - name: Install NSIS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nsis
+
+      - name: Stage installer inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p nsis-stage dist
+          cp "dist/cursus-windows-amd64.exe" nsis-stage/cursus.exe
+          cp configs/cursus-client.yaml configs/cursus-client-proxy.yaml \
+             configs/cursus-client-tcp.yaml configs/cursus-server.yaml nsis-stage/
+          cp packaging/windows/setup.nsi nsis-stage/
+          cd nsis-stage
+          makensis -DAPPVERSION="${{ steps.ver.outputs.version }}" setup.nsi
+          cp setup.exe "../dist/cursus-${{ steps.ver.outputs.version }}-setup.exe"
+          ls -lh ../dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-exe
+          path: dist/*setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # 4. Publish GitHub Release with all artifacts + checksums.
+  # ---------------------------------------------------------------------
+  publish:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: [deb, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS
+          echo "--- release files ---"
+          ls -lh
+          echo "--- checksums ---"
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: cursus ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            # cursus ${{ github.ref_name }}
+
+            **One binary, two roles.** `cursus -role server -config ...` or
+            `cursus -role client -config ...` (subcommands `cursus server` /
+            `cursus client` also work).
+
+            ## Ports
+            - `UDP/443` — TalariaUDP (default)
+            - `TCP/443` — TalariaTCP
+
+            One server process listens on both protocols. UDP and TCP port
+            spaces are independent, so one firewall rule covers both.
+
+            The client picks one protocol. In TUN mode it routes LAN traffic
+            through a virtual interface; in proxy mode it exposes local
+            HTTP/SOCKS5 listeners so LAN devices need no gateway change.
+
+            ## Artifacts
+            - `cursus_<version>_amd64.deb` / `_arm64.deb` — statically linked
+              binary at `/usr/bin/cursus`, YAML configs in `/etc/cursus/`,
+              systemd units for the server and the client.
+            - `cursus-<version>-setup.exe` — Windows x86_64 NSIS installer
+              with `cursus.exe`, starter YAML configs and shortcuts.
+            - Raw static binaries for linux-amd64, linux-arm64, windows-amd64.
+            - `SHA256SUMS`.
+
+            ## Quick start
+            ```sh
+            cursus -version
+            cursus -print-config -role server > cursus.yaml
+            cursus -role server -config cursus.yaml
+            ```
+
+            TLS 1.3 uses the public certificate for
+            `vpn.example.com`; the client verifies against the
+            system trust store. `wire_secret` and credentials in the YAML are
+            examples — change them before deployment.
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

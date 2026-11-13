@@ -1,0 +1,12 @@
+# Build outputs (two single-file binaries are produced by `make build`)
+bin/
+
+# Never commit secrets. The echo self-test CA is generated at runtime in
+# /var/tmp; production uses the server host's Let's Encrypt certificate on disk.
+*.pem
+*.key
+*.p12
+
+# Editor / OS
+.DS_Store
+*.swp

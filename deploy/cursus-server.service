@@ -1,0 +1,22 @@
+[Unit]
+Description=cursus-server (TalariaUDP, single binary)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/cursus -role server -config /etc/cursus/cursus-server.yaml
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/tmp /etc/cursus
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
