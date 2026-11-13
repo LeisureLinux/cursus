@@ -196,3 +196,19 @@ func TestProxyConfigValidation(t *testing.T) {
 		t.Fatal("proxy without any listener port was accepted")
 	}
 }
+
+func TestServerConfigDoesNotRequireClientSection(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mode = "server"
+	cfg.Identity = "test.example.com"
+	cfg.Client = config.ClientConfig{} // simulate `client:` omitted entirely
+	if err := cfg.Validate("server"); err != nil {
+		t.Fatalf("server without client section rejected: %v", err)
+	}
+	// The reverse still holds: a client without server_ip must fail.
+	cfg.Mode = "client"
+	cfg.WireSecret = "cursus-test-wire-secret-32-bytes-minimum"
+	if err := cfg.Validate("client"); err == nil {
+		t.Fatal("client without server_ip was accepted")
+	}
+}

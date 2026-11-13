@@ -134,9 +134,9 @@ Go 静态链接（`CGO_ENABLED=0`），无运行时依赖。Linux/macOS/Windows 
 
 ## 安装（Linux .deb）
 
-CI 发布 `cursus_<version>_amd64.deb` / `_arm64.deb`，包内包含
-`/usr/bin/cursus`、`/etc/cursus/*.yaml`（conffile）、
-systemd units `cursus-server` 与 `cursus-client`。
+CI 发布 `cursus_<version>_amd64.deb` / `_arm64.deb`（含 `/usr/bin/cursus`、
+`/etc/cursus/*.yaml`、systemd units）和
+`cursus-<version>-linux-{amd64,arm64}.tar.zst`（单静态二进制压缩包）。
 
 ```sh
 sudo dpkg -i cursus_<version>_amd64.deb
@@ -148,7 +148,7 @@ sudo ss -lntup | grep ':443\b'
 ## 安装（Windows setup.exe）
 
 CI 发布 `cursus-<version>-setup.exe`（NSIS）：装到
-`C:\Program Files\cursus\`，包含 `cursus.exe` 和四份 YAML 配置。
+`C:\Program Files\cursus\`，包含 `cursus.exe` 和 YAML 配置。
 
 ```
 cursus.exe -role client -config "C:\Program Files\cursus\config\cursus-client-proxy.yaml"
@@ -160,9 +160,9 @@ Windows 无真实 TUN provider，请使用代理模式。
 
 ```
 git tag v0.1.1 && git push origin v0.1.1
-      ├─ build      : go test / vet / 静态交叉编译 3 个目标
+      ├─ build      : go test / vet / 静态交叉编译 + Linux tar.zst
       ├─ deb        : dpkg-deb 打 amd64 + arm64 两个 .deb
-      ├─ windows    : makensis 打 setup.exe
+      ├─ windows    : makensis 打 setup.exe（唯一 Windows 发布物）
       └─ publish    : GitHub Release + SHA256SUMS
 ```
 

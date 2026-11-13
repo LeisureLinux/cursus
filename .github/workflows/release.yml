@@ -83,17 +83,27 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          set -euo pipefail
           mkdir -p dist
           go build -trimpath \
             -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
             -o "dist/cursus-${{ matrix.target }}${{ matrix.ext }}" ./cmd/cursus
           file "dist/cursus-${{ matrix.target }}${{ matrix.ext }}"
+          # Linux: publish a compressed tarball of the single static binary,
+          # not the raw executable. Windows: keep the raw exe as an internal
+          # artifact only; the public artifact is the NSIS setup.exe.
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            V="${{ steps.ver.outputs.version }}"
+            tar --zstd -cf "dist/cursus-${V}-${{ matrix.target }}.tar.zst" \
+              -C dist "cursus-${{ matrix.target }}"
+            rm -f "dist/cursus-${{ matrix.target }}"
+          fi
           ls -lh dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
-          path: dist/cursus-${{ matrix.target }}*
+          path: dist/*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------
@@ -146,6 +156,7 @@ jobs:
                    "$ROOT/usr/lib/systemd/system" \
                    "$ROOT/usr/share/doc/cursus"
 
+          tar --zstd -xf "dist/cursus-${V}-${{ matrix.target }}.tar.zst" -C dist
           install -m 0755 "dist/cursus-${{ matrix.target }}" "$ROOT/usr/bin/cursus"
           for f in configs/*.yaml; do
             install -m 0644 "$f" "$ROOT/etc/cursus/$(basename "$f")"
@@ -271,7 +282,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts -type f -exec cp {} release/ \;
+          # Only public artifacts. The raw Windows exe is an internal input
+          # for the NSIS installer and is not published.
+          find artifacts -type f \
+            ! -name 'cursus-windows-amd64.exe' -exec cp {} release/ \;
           cd release
           sha256sum * > SHA256SUMS
           echo "--- release files ---"
@@ -311,7 +325,8 @@ jobs:
               systemd units for the server and the client.
             - `cursus-<version>-setup.exe` — Windows x86_64 NSIS installer
               with `cursus.exe`, starter YAML configs and shortcuts.
-            - Raw static binaries for linux-amd64, linux-arm64, windows-amd64.
+            - `cursus-<version>-linux-{amd64,arm64}.tar.zst` — compressed
+              single static binaries for manual installs.
             - `SHA256SUMS`.
 
             ## Quick start

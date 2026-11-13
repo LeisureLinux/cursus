@@ -44,8 +44,11 @@ type Config struct {
 
 	Protocol string `yaml:"protocol"`
 
-	Server ServerConfig `yaml:"server"`
-	Client ClientConfig `yaml:"client"`
+	// Server is only needed when mode: server; Client only when mode: client.
+	// A YAML that omits the irrelevant section is valid (defaults are filled
+	// in memory by Load, and Validate never inspects the other role's fields).
+	Server ServerConfig `yaml:"server,omitempty"`
+	Client ClientConfig `yaml:"client,omitempty"`
 	TUN    TUNConfig    `yaml:"tun"`
 	TLS    TLSConfig    `yaml:"tls"`
 	Log    LogConfig    `yaml:"log"`
@@ -212,9 +215,6 @@ func (c Config) Validate(expectedMode string) error {
 	if c.Identity == "" || c.Identity == "vpn.example.com" {
 		return errors.New("identity must be set to your own certificate SNI in YAML")
 	}
-	if c.Client.ServerIP == "" || c.Client.ServerIP == "203.0.113.1" {
-		return errors.New("client.server_ip must be set to your server address in YAML")
-	}
 	if len(c.WireSecret) < 32 {
 		return errors.New("wire_secret must be at least 32 bytes")
 	}
@@ -223,9 +223,10 @@ func (c Config) Validate(expectedMode string) error {
 	default:
 		return fmt.Errorf("unsupported protocol %q", c.Protocol)
 	}
-	// The server always runs both protocols in one process. A client picks
-	// exactly one; proxy mode requires TalariaTCP because DialStream is a
-	// per-connection SOCKS5 CONNECT stream.
+	// The server always runs both protocols in one process, so its own
+	// `protocol` field is only a label; only the client picks exactly one.
+	// Proxy mode requires TalariaTCP because DialStream is a per-connection
+	// SOCKS5 CONNECT stream.
 	if expectedMode == "client" && c.Protocol == "TalariaTCP" && c.Client.Proxy.Enabled {
 		if c.Client.Proxy.SOCKS5Port == 0 && c.Client.Proxy.HTTPPort == 0 {
 			return errors.New("client.proxy.enabled needs at least one of socks5_port / http_port")
@@ -240,21 +241,29 @@ func (c Config) Validate(expectedMode string) error {
 	if c.TUN.MTU() < 576 || c.TUN.MTU() > 9000 {
 		return errors.New("tun.mtu must be 576..9000")
 	}
-	if len(c.Server.Auth.ClientID) == 0 || len(c.Server.Auth.SecretKey) == 0 ||
-		len(c.Server.Auth.ClientID) > 255 || len(c.Server.Auth.SecretKey) > 255 {
-		return errors.New("server.auth credentials must be 1..255 bytes")
+	if expectedMode == "server" {
+		if len(c.Server.Auth.ClientID) == 0 || len(c.Server.Auth.SecretKey) == 0 ||
+			len(c.Server.Auth.ClientID) > 255 || len(c.Server.Auth.SecretKey) > 255 {
+			return errors.New("server.auth credentials must be 1..255 bytes")
+		}
+		// No client.* fields are required on the server.
+		return nil
 	}
+
+	// Client-only checks from here on.
 	if len(c.Client.ClientID) == 0 || len(c.Client.SecretKey) == 0 ||
 		len(c.Client.ClientID) > 255 || len(c.Client.SecretKey) > 255 {
 		return errors.New("client credentials must be 1..255 bytes")
 	}
-	if c.Client.ServerIP == "" || net.ParseIP(c.Client.ServerIP) == nil {
-		return fmt.Errorf("client.server_ip %q is not an IP address", c.Client.ServerIP)
+	if c.Client.ServerIP == "" || c.Client.ServerIP == "203.0.113.1" || net.ParseIP(c.Client.ServerIP) == nil {
+		return fmt.Errorf("client.server_ip %q must be your real server IP", c.Client.ServerIP)
 	}
-	for _, ip := range []string{c.Client.EntranceIP, c.Client.ExitIP} {
-		parsed := net.ParseIP(ip)
-		if parsed == nil || parsed.To4() == nil {
-			return fmt.Errorf("TUN address %q must be IPv4", ip)
+	if !c.Client.Proxy.Enabled {
+		for _, ip := range []string{c.Client.EntranceIP, c.Client.ExitIP} {
+			parsed := net.ParseIP(ip)
+			if parsed == nil || parsed.To4() == nil {
+				return fmt.Errorf("TUN address %q must be IPv4", ip)
+			}
 		}
 	}
 	for _, route := range c.Client.Routes {
