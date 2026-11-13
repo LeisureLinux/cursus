@@ -1,61 +1,66 @@
 # cursus
 
-**cursus** 是一个基于 [Talaria](https://github.com/X-VPN/Talaria) 协议库构建的VPN 服务端和客户端：
-**一个二进制、两种角色**，根据命令行 `-role server|client` 区分。
+**English** | [简体中文](README_zh.md)
 
-- 协议：`TalariaUDP`（UDP/443）/ `TalariaTCP`（TCP/443）
-- TLS：TLS 1.3，需部署证书
-  **不允许跳过验证**
-- 配置：单一 YAML 文件，两端字段一致
-- 底层：Talaria 负责加密数据通道（外层 wire secret 封装、Retry、AEAD、
-  会话授权、转发策略）；cursus 只负责进程生命周期、证书加载、TUN、
-  路由/NAT、本地代理
+**cursus** is a VPN server and client built on the [Talaria](https://github.com/X-VPN/Talaria) protocol library:
+**one binary, two roles**, selected by the `-role server|client` command-line flag.
 
-> UDP 和 TCP 都统一使用端口 443（两者端口空间独立），防火墙一条规则即可覆盖。
+- Protocols: `TalariaUDP` (UDP/443) / `TalariaTCP` (TCP/443)
+- TLS: TLS 1.3, certificates required —
+  **verification cannot be skipped**
+- Configuration: a single YAML file, with identical fields on both ends
+- Under the hood: Talaria handles the encrypted data channel (outer wire-secret wrapping,
+  Retry, AEAD, session authorization, forwarding policy); cursus only handles the process
+  lifecycle, certificate loading, TUN, routing/NAT, and the local proxy
 
+> UDP and TCP both use port 443 (their port spaces are independent), so a single firewall
+> rule covers both.
 
-## 单二进制
+## Single binary
 
 ```
 cursus -version
 cursus -print-config -role server > cursus.yaml
 cursus -role server -config cursus.yaml
 cursus -role client -config cursus.yaml
-cursus server -config cursus.yaml     # 子命令别名
-cursus client -config cursus.yaml     # 子命令别名
+cursus server -config cursus.yaml     # subcommand alias
+cursus client -config cursus.yaml     # subcommand alias
 ```
 
-`-role` 或子命令决定角色，YAML 里的 `mode` 必须一致（`Validate` 会检查）。
-`-firewall` 打印要开的端口，`-duration 30s` 自动退出，`Ctrl-C` 优雅关闭。
+The `-role` flag or subcommand picks the role, and the YAML `mode` must match
+(`Validate` checks this). `-firewall` prints the ports to open, `-duration 30s`
+exits automatically, and `Ctrl-C` shuts down gracefully.
 
-## 服务端：一个进程同时提供 TCP 和 UDP
+## Server: one process serves both TCP and UDP
 
-`cursus -role server` 在**同一个进程**里启动两个 Talaria listener：
+`cursus -role server` starts two Talaria listeners **in the same process**:
 
-| 协议 | 监听 | VIP 池 | TUN |
+| Protocol | Listen | VIP pool | TUN |
 |---|---|---|---|
 | `TalariaUDP` | UDP/443 | `10.77.0.0/24` | `cursus-s0` |
 | `TalariaTCP` | TCP/443 | `10.78.0.0/24` | `cursus-t0` |
 
-两者共享证书、静态账号、`wire_secret` 和目标策略；VIP 池与 nft 表按 TUN 名
-隔离，避免回包路由冲突。只需要一个 systemd unit `cursus-server`。
+Both share the certificates, static accounts, `wire_secret` and destination policy;
+VIP pools and nft tables are isolated by TUN name to avoid reply-routing conflicts.
+Only one systemd unit, `cursus-server`, is needed.
 
 ```sh
 cursus -role server -config configs/cursus-server.yaml -firewall
 # UDP/443 + TCP/443
 ```
 
-客户端二选一：`protocol: TalariaUDP` 或 `protocol: TalariaTCP`。
+The client picks one: `protocol: TalariaUDP` or `protocol: TalariaTCP`.
 
-## 客户端两种接入方式
+## Two client access modes
 
-### 1) TUN 模式（三层 VPN，默认）
+### 1) TUN mode (Layer-3 VPN, default)
 
-客户端建虚拟网卡，需要 root / `CAP_NET_ADMIN`。局域网设备把**默认网关指向
-客户端机器**（或 DHCP 下发），所有 TCP/UDP/ICMP 自然进隧道。不需要任何代理。
+The client creates a virtual NIC and needs root / `CAP_NET_ADMIN`. LAN devices point
+their **default gateway at the client machine** (or get it via DHCP), so all
+TCP/UDP/ICMP traffic naturally enters the tunnel. No proxy is needed.
 
 ```yaml
-protocol: TalariaUDP          # 或 TalariaTCP
+protocol: TalariaUDP          # or TalariaTCP
 client:
   proxy:
     enabled: false
@@ -63,14 +68,15 @@ tun:
   mode: tun
 ```
 
-### 2) 本地代理模式
+### 2) Local proxy mode
 
-客户端监听 `0.0.0.0:1080`（SOCKS5）和 `0.0.0.0:8080`（HTTP），
-局域网设备在浏览器/应用里把代理指向客户端机器 IP 即可经服务端出网，
-**不需要改默认网关、不需要每台设备装客户端、不需要 root**。
+The client listens on `0.0.0.0:1080` (SOCKS5) and `0.0.0.0:8080` (HTTP).
+LAN devices simply point their browser/app proxy at the client machine's IP to
+reach the internet through the server — **no default-gateway changes, no client
+installed on every device, no root required**.
 
 ```yaml
-protocol: TalariaTCP          # 代理模式要求 TCP
+protocol: TalariaTCP          # proxy mode requires TCP
 client:
   proxy:
     enabled: true
@@ -78,152 +84,176 @@ client:
     socks5_port: 1080
     http_port: 8080
 tun:
-  mode: echo                  # 代理模式不建 TUN
+  mode: echo                  # proxy mode creates no TUN
 ```
 
 ```sh
 cursus -role client -config configs/cursus-client-proxy.yaml
 
-# 局域网任意设备：
+# From any device on the LAN:
 curl -x http://<client-lan-ip>:8080 https://example.com
 curl --socks5-hostname <client-lan-ip>:1080 https://example.com
 ```
 
-原理：每个代理连接映射成一条 TalariaTCP 的 `DialStream`（SOCKS5 CONNECT 流），
-服务端做目标策略检查并拨号出网。HTTP 代理支持普通请求与 `CONNECT` 隧道。
-这是应用层接入，只覆盖支持代理配置的应用；TUN 模式才是全流量三层接入。
+How it works: each proxy connection maps to one TalariaTCP `DialStream`
+(a SOCKS5 CONNECT stream); the server runs destination-policy checks and dials
+out. The HTTP proxy supports plain requests and `CONNECT` tunnels. This is
+application-layer access and only covers apps that support proxy configuration;
+TUN mode is the full-traffic Layer-3 option.
 
-> 代理模式必须使用 `TalariaTCP`；`Validate` 会拒绝 `TalariaUDP + proxy.enabled`。
+> Proxy mode requires `TalariaTCP`; `Validate` rejects `TalariaUDP + proxy.enabled`.
 
-## 抗封锁与性能定位
+## Censorship resistance and performance positioning
 
-cursus / Talaria 是**速度导向**的 VPN 数据通道，不是抗封锁协议。
+cursus / Talaria is a **speed-oriented** VPN data channel, not a
+censorship-circumvention protocol.
 
-**抗封锁弱点：**
+**Censorship weaknesses:**
 
-- TCP/443 上是「变形 TLS」：有真实证书与 SNI，但前导码被 wire secret 随机化，
-  不是标准 ClientHello。对 DPI 而言这是「声称 TLS 却不像 TLS」的高价值异常特征。
-- 无流量整形：记录头固定（`type‖epoch‖seq`）、包长固定、无随机 padding、
-  无包长抖动、无低熵模式。长时间大流量的长度分布与熵特征容易被统计聚类。
-- 固定端口 + 固定 SNI：SNI、证书域名、443 端口都是可直接封禁的稳定指纹。
-- 主动探测防护较强（无 wire secret 的包静默丢弃、裸 TLS ClientHello 无响应），
-  但这只解决「被扫到」，不解决「被分类」。
-- 无多入口、无伪装站复用、无 SNI 轮换、无流量模式切换。
+- On TCP/443 it is "mutated TLS": real certificates and SNI, but the preamble is
+  randomized by the wire secret, so it is not a standard ClientHello. To DPI this
+  is a high-value anomaly — "claims TLS but doesn't look like TLS".
+- No traffic shaping: fixed record header (`type‖epoch‖seq`), fixed packet
+  lengths, no random padding, no length jitter, no low-entropy mode. Sustained
+  high-volume flows are easy to cluster statistically by length distribution
+  and entropy.
+- Fixed port + fixed SNI: SNI, certificate domain and port 443 are stable
+  fingerprints that can be blocked directly.
+- Active-probing protection is decent (packets without the wire secret are
+  silently dropped, a bare TLS ClientHello gets no response), but that only
+  solves "being scanned", not "being classified".
+- No multiple entry points, no camouflage-site reuse, no SNI rotation, no
+  traffic-pattern switching.
 
-X-VPN 自己也把 Talaria 定位为速度方案，受限网络走的是 Everest 系列与混淆，
-官方技术文档明确写了「Talaria 专注速度与效率，Everest 更适合限制性网络」。
-若主要目标是抗封锁，应使用 mieru/mita 这类带随机 padding、低熵模式、
-无 TLS 指纹的专用协议，而不是 cursus。
+X-VPN itself positions Talaria as a speed solution; restricted networks use the
+Everest family and obfuscation, and its official technical docs explicitly state
+that "Talaria focuses on speed and efficiency, while Everest is better suited to
+restrictive networks". If censorship resistance is the main goal, use a
+purpose-built protocol such as mieru/mita with random padding, low-entropy mode
+and no TLS fingerprint, rather than cursus.
 
-**速度（X-VPN 官方口径，内部测试，非本项目实测）：**
+**Speed (X-VPN's official claims, internal tests, not measured in this project):**
 
-- 10 Gbps 内网测试：下载/上传综合较其旧协议（含 WireGuard）提升 **200%+**；
-  Windows 新加坡线路 P50 下载 1,536 → 5,706 Mbps。
-- 1 Gbps / 100 Mbps 测试：Windows/macOS 下载速度损失 **< 5%**（保留 >95% 基线）。
-- 手段：每连接独立通道多核并行、批量包处理、流级转发减少逐包开销。
-- 测试规模 8,451 次 / 6,590 有效样本，2026-08~09，新加坡发起至新加坡/英国/美国。
+- 10 Gbps LAN tests: combined download/upload improved by **200%+** over their
+  older protocols (including WireGuard); on a Windows Singapore route, P50
+  download went from 1,536 → 5,706 Mbps.
+- 1 Gbps / 100 Mbps tests: Windows/macOS download speed loss **< 5%**
+  (>95% of baseline retained).
+- Techniques: independent per-connection channels for multi-core parallelism,
+  batched packet processing, stream-level forwarding to cut per-packet overhead.
+- Test scale: 8,451 runs / 6,590 valid samples, 2026-08 to 09, initiated from
+  Singapore to Singapore/UK/US.
 
-这些是 X-VPN 自家商业网络 + 客户端优化的结果，开源库本身不含服务端集群、
-AI 路由、平台加速路径。cursus 作为原型，实测吞吐约 3–4 MB/s 量级，
-不具备上述数字的可复现性；MTU 上限 1314、单进程、无 offload 优化。
+These are results from X-VPN's own commercial network plus client optimizations;
+the open-source library itself has no server cluster, AI routing or platform
+acceleration paths. cursus is a prototype: measured throughput is on the order
+of 3–4 MB/s, and the numbers above are not reproducible here — MTU capped at
+1314, single process, no offload optimizations.
 
-## 配置
+## Configuration
 
-| 配置 | 角色 / 模式 |
+| Config | Role / mode |
 |---|---|
-| `configs/cursus-server.yaml` | server（单进程双协议） |
+| `configs/cursus-server.yaml` | server (single process, both protocols) |
 | `configs/cursus-client.yaml` | client / TalariaUDP + TUN |
 | `configs/cursus-client-tcp.yaml` | client / TalariaTCP + TUN |
-| `configs/cursus-client-proxy.yaml` | client / TalariaTCP + 本地 HTTP/SOCKS5 代理 |
-| `configs/echo-local.yaml` | 免 root 回环自检 |
+| `configs/cursus-client-proxy.yaml` | client / TalariaTCP + local HTTP/SOCKS5 proxy |
+| `configs/echo-local.yaml` | root-free loopback self-check |
 
-**部署前必须修改的占位符：**
+**Placeholders you must change before deploying:**
 
-| 字段 | 说明 |
+| Field | Meaning |
 |---|---|
-| `identity` | 与证书 SNI 一致、两端相同、每个端点唯一 |
-| `wire_secret` | ≥32 字节部署级密钥，两端相同 |
-| `server.cert_file` / `key_file` | 自己的证书链与私钥路径 |
-| `client.server_ip` | 自己的服务器公网 IP |
-| `server.auth.*` / `client.client_id` / `secret_key` | 自己的凭据 |
-| `client.proxy.listen_host` | 若要给局域网用，保持 `0.0.0.0` |
+| `identity` | Matches the certificate SNI, identical on both ends, unique per endpoint |
+| `wire_secret` | ≥32-byte deployment-level secret, identical on both ends |
+| `server.cert_file` / `key_file` | Paths to your own certificate chain and private key |
+| `client.server_ip` | Your server's public IP |
+| `server.auth.*` / `client.client_id` / `secret_key` | Your own credentials |
+| `client.proxy.listen_host` | Keep `0.0.0.0` to serve the LAN |
 
-客户端**不需要任何证书文件**，用系统信任库 + SNI 校验；SNI 不能写成裸 IP。
+The client **needs no certificate files**: it uses the system trust store plus
+SNI verification. SNI must not be a bare IP.
 
-## 构建与测试
+## Build and test
 
 ```sh
-make build          # -> bin/cursus（唯一二进制）
-make test           # 单元 + race + 双协议端到端
-make release        # linux amd64/arm64 + windows amd64 静态二进制
+make build          # -> bin/cursus (the only binary)
+make test           # unit + race + dual-protocol end-to-end
+make release        # linux amd64/arm64 + windows amd64 static binaries
 ```
 
-Go 静态链接（`CGO_ENABLED=0`），无运行时依赖。Linux/macOS/Windows 均可编译；
-真实 TUN 转发仅 Linux，其它平台可用 `tun.mode: echo` 或代理模式。
+Statically linked Go (`CGO_ENABLED=0`) with no runtime dependencies. Builds on
+Linux/macOS/Windows; real TUN forwarding is Linux-only — on other platforms use
+`tun.mode: echo` or proxy mode.
 
-> MTU 默认 **1314**（Talaria 对 UDP carrier 的上限：`1460-48-21-77`），
-> 改大不会提速，只会让大包被丢弃。代理模式不涉及 MTU。
+> Default MTU is **1314** (Talaria's cap for the UDP carrier: `1460-48-21-77`).
+> Raising it does not improve speed; it only causes large packets to be dropped.
+> Proxy mode does not involve MTU.
 
-## 安装（Linux .deb）
+## Installation (Linux .deb)
 
-CI 发布 `cursus_<version>_amd64.deb` / `_arm64.deb`（含 `/usr/bin/cursus`、
-`/etc/cursus/*.yaml`、systemd units）和
-`cursus-<version>-linux-{amd64,arm64}.tar.zst`（单静态二进制压缩包）。
+CI publishes `cursus_<version>_amd64.deb` / `_arm64.deb` (containing
+`/usr/bin/cursus`, `/etc/cursus/*.yaml`, systemd units) and
+`cursus-<version>-linux-{amd64,arm64}.tar.zst` (single static binary archive).
 
 ```sh
 sudo dpkg -i cursus_<version>_amd64.deb
-sudo vi /etc/cursus/cursus-server.yaml       # 替换所有占位符
+sudo vi /etc/cursus/cursus-server.yaml       # replace all placeholders
 sudo systemctl enable --now cursus-server
 sudo ss -lntup | grep ':443\b'
 ```
 
-## 安装（Windows setup.exe）
+## Installation (Windows setup.exe)
 
-CI 发布 `cursus-<version>-setup.exe`（NSIS）：装到
-`C:\Program Files\cursus\`，包含 `cursus.exe` 和 YAML 配置。
+CI publishes `cursus-<version>-setup.exe` (NSIS), which installs to
+`C:\Program Files\cursus\` with `cursus.exe` and YAML configs.
 
 ```
 cursus.exe -role client -config "C:\Program Files\cursus\config\cursus-client-proxy.yaml"
 ```
 
-Windows 无真实 TUN provider，请使用代理模式。
+Windows has no real TUN provider; use proxy mode.
 
-## 发布流程（全部在 CI）
+## Release pipeline (entirely in CI)
 
 ```
 git tag v0.1.1 && git push origin v0.1.1
-      ├─ build      : go test / vet / 静态交叉编译 + Linux tar.zst
-      ├─ deb        : dpkg-deb 打 amd64 + arm64 两个 .deb
-      ├─ windows    : makensis 打 setup.exe（唯一 Windows 发布物）
+      ├─ build      : go test / vet / static cross-compilation + Linux tar.zst
+      ├─ deb        : dpkg-deb builds amd64 + arm64 .deb packages
+      ├─ windows    : makensis builds setup.exe (the only Windows artifact)
       └─ publish    : GitHub Release + SHA256SUMS
 ```
 
-workflow：`.github/workflows/release.yml`。本地只改代码、打 tag、push。
+Workflow: `.github/workflows/release.yml`. Locally you only change code, tag,
+and push.
 
-## 目录
+## Layout
 
 ```
-cmd/cursus/              单一 main，-role / 子命令区分角色
-internal/config/          YAML schema + 校验
-internal/app/             server/client 组装、证书、TUN、路由、本地代理
-configs/                  示例 YAML
-deploy/                   systemd units
-packaging/deb/            dpkg-deb control 模板
-packaging/windows/        NSIS setup.nsi
-.github/workflows/        CI 静态编译 + 打包 + Release
-scripts/                  安装参考、防火墙提示、压测脚本
-third_party/talaria/      Talaria 上游源码快照（含 LICENSE、go.mod）
+cmd/cursus/              single main; -role / subcommand picks the role
+internal/config/         YAML schema + validation
+internal/app/            server/client assembly, certificates, TUN, routing, local proxy
+configs/                 example YAML files
+deploy/                  systemd units
+packaging/deb/           dpkg-deb control templates
+packaging/windows/       NSIS setup.nsi
+.github/workflows/       CI static builds + packaging + Release
+scripts/                 install references, firewall hints, benchmark scripts
+third_party/talaria/     upstream Talaria source snapshot (LICENSE, go.mod)
 ```
 
-## 限制
+## Limitations
 
-- 示例 `wire_secret` 与凭据仅用于测试，部署前必须替换。
-- `TunDevice.ReleaseVirtualIP` 在原型里没有 flush conntrack；生产需补。
-- 代理模式只支持 TCP（SOCKS5 CONNECT / HTTP CONNECT + 普通 HTTP），
-  不支持 UDP 代理；需要 UDP 全流量请用 TUN 模式。
-- 不实现 DNS 下发、断线重连、多用户配额、按用户防火墙。
-- 上游 Talaria 为 AGPL-3.0-only，快照保留在 `third_party/talaria/LICENSE`。
+- The example `wire_secret` and credentials are for testing only; replace them
+  before deploying.
+- `TunDevice.ReleaseVirtualIP` does not flush conntrack in this prototype;
+  production needs it.
+- Proxy mode is TCP-only (SOCKS5 CONNECT / HTTP CONNECT + plain HTTP); no UDP
+  proxy. Use TUN mode if you need full-traffic UDP.
+- No DNS push, no reconnect, no per-user quotas, no per-user firewall.
+- Upstream Talaria is AGPL-3.0-only; the snapshot license is kept at
+  `third_party/talaria/LICENSE`.
 
-## 许可
+## License
 
-**AGPL-3.0-only**。见 `LICENSE` 与 `NOTICE`。
+**AGPL-3.0-only**. See `LICENSE` and `NOTICE`.
