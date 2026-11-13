@@ -1,7 +1,7 @@
 # cursus
 
-**cursus** 是一个基于 [Talaria](https://github.com/X-VPN/Talaria) 协议库构建的可部署 VPN 原型：
-**一个二进制、两种角色**，靠命令行 `-role server|client` 区分。
+**cursus** 是一个基于 [Talaria](https://github.com/X-VPN/Talaria) 协议库构建的VPN 服务端和客户端：
+**一个二进制、两种角色**，根据命令行 `-role server|client` 区分。
 
 - 协议：`TalariaUDP`（UDP/443）/ `TalariaTCP`（TCP/443）
 - TLS：TLS 1.3，需部署证书
